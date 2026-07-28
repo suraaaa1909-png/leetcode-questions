@@ -1,0 +1,152 @@
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Scanner;
+ 
+public class OnlineExam {
+ 
+    // ---- Update these to match your MySQL setup ----
+    static final String DB_URL = "jdbc:mysql://localhost:3306/online_exam_db";
+    static final String DB_USER = "root";
+    static final String DB_PASSWORD = "your_password";
+    // --------------------------------------------------
+ 
+    // Simple in-memory representation of a question pulled from the DB
+    static class Question {
+        int id;
+        String text;
+        String[] options = new String[4];
+        int correctOption;
+    }
+ 
+    public static void main(String[] args) {
+        Scanner sc = new Scanner(System.in);
+ 
+        System.out.println("========================================");
+        System.out.println("      ONLINE EXAMINATION SYSTEM");
+        System.out.println("========================================\n");
+ 
+        try (Connection conn = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD)) {
+ 
+            List<Question> questions = loadQuestions(conn);
+            if (questions.isEmpty()) {
+                System.out.println("No questions found in the database. Please run schema.sql first.");
+                return;
+            }
+ 
+            System.out.print("Enter your name: ");
+            String candidateName = sc.nextLine().trim();
+            if (candidateName.isEmpty()) {
+                candidateName = "Anonymous";
+            }
+ 
+            int[] selectedAnswers = new int[questions.size()];
+ 
+            for (int i = 0; i < questions.size(); i++) {
+                Question q = questions.get(i);
+                System.out.println("\n" + (i + 1) + ". " + q.text);
+                for (int j = 0; j < 4; j++) {
+                    System.out.println("  " + (j + 1) + ". " + q.options[j]);
+                }
+ 
+                int choice = 0;
+                while (choice < 1 || choice > 4) {
+                    System.out.print("Your answer (1-4): ");
+                    if (sc.hasNextInt()) {
+                        choice = sc.nextInt();
+                        if (choice < 1 || choice > 4) {
+                            System.out.println("Please enter a number between 1 and 4.");
+                        }
+                    } else {
+                        System.out.println("Invalid input. Please enter a number.");
+                        sc.next(); // discard bad token
+                    }
+                }
+                sc.nextLine(); // consume leftover newline
+                selectedAnswers[i] = choice;
+            }
+ 
+            // Score the exam
+            int score = 0;
+            for (int i = 0; i < questions.size(); i++) {
+                if (selectedAnswers[i] == questions.get(i).correctOption) {
+                    score++;
+                }
+            }
+ 
+            // Persist the result and per-question answers
+            int resultId = saveResult(conn, candidateName, score, questions.size());
+            saveAnswers(conn, resultId, questions, selectedAnswers);
+ 
+            System.out.println("\n========================================");
+            System.out.println("   EXAMINATION COMPLETED!");
+            System.out.println("   Candidate: " + candidateName);
+            System.out.println("   Your Score: " + score + " out of " + questions.size());
+            System.out.println("========================================");
+ 
+        } catch (SQLException e) {
+            System.out.println("Database error: " + e.getMessage());
+        } finally {
+            sc.close();
+        }
+    }
+ 
+    // Fetch all questions from the database
+    static List<Question> loadQuestions(Connection conn) throws SQLException {
+        List<Question> list = new ArrayList<>();
+        String sql = "SELECT id, question_text, option1, option2, option3, option4, correct_option FROM questions";
+ 
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+ 
+            while (rs.next()) {
+                Question q = new Question();
+                q.id = rs.getInt("id");
+                q.text = rs.getString("question_text");
+                q.options[0] = rs.getString("option1");
+                q.options[1] = rs.getString("option2");
+                q.options[2] = rs.getString("option3");
+                q.options[3] = rs.getString("option4");
+                q.correctOption = rs.getInt("correct_option");
+                list.add(q);
+            }
+        }
+        return list;
+    }
+ 
+    // Insert the overall result row and return its generated id
+    static int saveResult(Connection conn, String name, int score, int total) throws SQLException {
+        String sql = "INSERT INTO exam_results (candidate_name, score, total_questions) VALUES (?, ?, ?)";
+        try (PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, name);
+            ps.setInt(2, score);
+            ps.setInt(3, total);
+            ps.executeUpdate();
+ 
+            try (ResultSet keys = ps.getGeneratedKeys()) {
+                if (keys.next()) {
+                    return keys.getInt(1);
+                }
+            }
+        }
+        return -1;
+    }
+ 
+    // Insert one row per question answered, linked to the result
+    static void saveAnswers(Connection conn, int resultId, List<Question> questions, int[] selectedAnswers) throws SQLException {
+        String sql = "INSERT INTO exam_answers (result_id, question_id, selected_option, is_correct) VALUES (?, ?, ?, ?)";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (int i = 0; i < questions.size(); i++) {
+                Question q = questions.get(i);
+                boolean correct = selectedAnswers[i] == q.correctOption;
+ 
+                ps.setInt(1, resultId);
+                ps.setInt(2, q.id);
+                ps.setInt(3, selectedAnswers[i]);
+                ps.setBoolean(4, correct);
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+}
